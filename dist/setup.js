@@ -44,16 +44,26 @@ function otelEnvBlockPosix(port) {
         `# Tag every copilot prompt with the terminal folder it ran from, so the`,
         `# tracer can attribute it to the right project. OTLP carries no working-dir,`,
         `# so we inject it via OTEL_RESOURCE_ATTRIBUTES (percent-encoded).`,
+        `# Pure shell (bash 3.2+/zsh) — no python3, whose macOS stub pops up an Xcode`,
+        `# Command Line Tools install dialog when the tools aren't installed.`,
+        `_copilot_tracer_urlencode() {`,
+        `  local LC_ALL=C _s="$1" _out="" _c _i`,
+        `  for (( _i = 0; _i < \${#_s}; _i++ )); do`,
+        `    _c="\${_s:\$_i:1}"`,
+        `    case "\$_c" in`,
+        `      [a-zA-Z0-9._~/-]) _out="\$_out\$_c" ;;`,
+        `      *) _out="\$_out$(printf '%%%02X' $(( $(printf '%d' "'\$_c") & 255 )))" ;;`,
+        `    esac`,
+        `  done`,
+        `  printf '%s' "\$_out"`,
+        `}`,
+        ``,
         `copilot() {`,
         `  local _wd`,
-        `  if command -v python3 >/dev/null 2>&1; then`,
-        `    _wd="$(pwd | python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe="/"))')"`,
-        `  else`,
-        `    _wd="$(pwd)"`,
-        `  fi`,
+        `  _wd="$(_copilot_tracer_urlencode "$(pwd)")"`,
         `  if [ -n "\${OTEL_RESOURCE_ATTRIBUTES:-}" ]; then`,
         `    # Drop any stale working_dir entry, then append the current folder`,
-        `    OTEL_RESOURCE_ATTRIBUTES="$(printf '%s' "\$OTEL_RESOURCE_ATTRIBUTES" | sed -E 's/(^|,)github\.copilot\.working_dir=[^,]*/\\1/g; s/^,//')"`,
+        `    OTEL_RESOURCE_ATTRIBUTES="$(printf '%s' "\$OTEL_RESOURCE_ATTRIBUTES" | sed -E 's/(^|,)github\.copilot\.working_dir=[^,]*//g; s/^,//')"`,
         `    [ -z "\$OTEL_RESOURCE_ATTRIBUTES" ] || OTEL_RESOURCE_ATTRIBUTES="\${OTEL_RESOURCE_ATTRIBUTES},"`,
         `  fi`,
         `  OTEL_RESOURCE_ATTRIBUTES="\${OTEL_RESOURCE_ATTRIBUTES}github.copilot.working_dir=\${_wd}"`,
@@ -63,11 +73,7 @@ function otelEnvBlockPosix(port) {
         ``,
         `claude() {`,
         `  local _wd`,
-        `  if command -v python3 >/dev/null 2>&1; then`,
-        `    _wd="$(pwd | python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read().strip(), safe="/"))')"`,
-        `  else`,
-        `    _wd="$(pwd)"`,
-        `  fi`,
+        `  _wd="$(_copilot_tracer_urlencode "$(pwd)")"`,
         `  if [ -n "\${OTEL_RESOURCE_ATTRIBUTES:-}" ]; then`,
         `    OTEL_RESOURCE_ATTRIBUTES="\${OTEL_RESOURCE_ATTRIBUTES},claude_code.working_dir=\${_wd}"`,
         `  else`,
@@ -282,16 +288,32 @@ function detectVSCode() {
         return { found: true, version, hasBuiltinCopilot };
     }
     catch {
-        // Try well-known install locations directly
-        const appPath = process.platform === 'darwin'
-            ? '/Applications/Visual Studio Code.app'
+        // `code` is often not on PATH (on macOS it needs "Shell Command: Install 'code'
+        // command in PATH"), so try well-known install locations directly.
+        const appPaths = process.platform === 'darwin'
+            ? ['/Applications/Visual Studio Code.app', path.join(os.homedir(), 'Applications', 'Visual Studio Code.app')]
             : isWindows()
-                ? path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'Microsoft VS Code', 'Code.exe')
-                : null;
-        if (appPath && fs.existsSync(appPath)) {
-            return { found: true, hasBuiltinCopilot: true, version: 'unknown (app found)' };
+                ? [path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'Microsoft VS Code', 'Code.exe')]
+                : [];
+        const appPath = appPaths.find(p => fs.existsSync(p));
+        if (appPath) {
+            const version = process.platform === 'darwin' ? readMacAppVersion(appPath) : undefined;
+            if (version) {
+                const [major, minor] = version.split('.').map(n => parseInt(n, 10));
+                return { found: true, path: appPath, version, hasBuiltinCopilot: major > 1 || (major === 1 && minor >= 99) };
+            }
+            return { found: true, path: appPath, hasBuiltinCopilot: true, version: 'unknown (app found)' };
         }
         return { found: false, hasBuiltinCopilot: false };
+    }
+}
+function readMacAppVersion(appPath) {
+    try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(appPath, 'Contents', 'Resources', 'app', 'package.json'), 'utf8'));
+        return typeof pkg.version === 'string' ? pkg.version : undefined;
+    }
+    catch {
+        return undefined;
     }
 }
 function detectShellProfile() {
@@ -308,6 +330,15 @@ function detectShellProfile() {
         }
         // Default to the PowerShell 7+ profile (create it)
         return candidates[0];
+    }
+    // Prefer the rc file of the user's login shell, so a stale ~/.bash_profile
+    // doesn't win over a zsh user's (possibly not-yet-created) ~/.zshrc.
+    const shell = path.basename(process.env.SHELL ?? '');
+    if (shell === 'zsh')
+        return path.join(os.homedir(), '.zshrc');
+    if (shell === 'bash') {
+        // macOS terminals start bash as a login shell, which reads ~/.bash_profile, not ~/.bashrc
+        return path.join(os.homedir(), process.platform === 'darwin' ? '.bash_profile' : '.bashrc');
     }
     const candidates = [
         path.join(os.homedir(), '.zshrc'),
@@ -368,7 +399,12 @@ function patchShellProfile(profilePath, port) {
 }
 function patchVSCodeSettings(settingsPath, port) {
     if (!fs.existsSync(settingsPath)) {
-        return { action: 'skipped', reason: 'settings.json not found' };
+        // VS Code creates its User dir on first launch but settings.json only once a
+        // setting is changed — a fresh install would otherwise never get configured.
+        if (!fs.existsSync(path.dirname(settingsPath))) {
+            return { action: 'skipped', reason: `VS Code user settings folder not found (${path.dirname(settingsPath)}) — launch VS Code once, then re-run setup` };
+        }
+        fs.writeFileSync(settingsPath, '{}\n', 'utf8');
     }
     let settings;
     try {

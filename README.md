@@ -29,8 +29,11 @@ copilot-tracer --setup --daemon
 
 This will:
 1. Detect your Copilot CLI and VS Code installation
-2. Patch `~/.zshrc` with OTEL env vars
-3. Patch VS Code `settings.json` with terminal env vars
+2. Patch your shell profile with OTEL env vars — chosen from `$SHELL`: `~/.zshrc` for zsh
+   (macOS default), `~/.bash_profile` for bash on macOS, `~/.bashrc` for bash on Linux
+3. Patch VS Code `settings.json` with terminal env vars (created if VS Code has been
+   launched but no settings were saved yet; on macOS VS Code is also found in
+   `/Applications` when the `code` command isn't on `PATH`)
 4. Enable Claude Code OTLP logs/events and enhanced beta traces
 5. Install Claude Code hooks into `~/.claude/settings.json` (merged with any hooks you
    already have — nothing is overwritten)
@@ -39,7 +42,7 @@ This will:
 Then apply env vars in your current shell:
 
 ```bash
-source ~/.zshrc
+source ~/.zshrc   # or the profile path printed by setup
 ```
 
 Restart VS Code once, and restart Claude Code to pick up the hooks. After that, the
