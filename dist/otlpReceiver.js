@@ -359,7 +359,8 @@ function processSpans(spans, sessionId, projectId, workingDir) {
             continue;
         }
         // ── invoke_agent span = top-level agent turn ──────────────────────────
-        if (spanName === 'invoke_agent') {
+        // Copilot CLI emits "invoke_agent"; VS Code Copilot Chat emits "invoke_agent <agent>"
+        if (spanName === 'invoke_agent' || spanName.startsWith('invoke_agent ')) {
             const startMs = nanoToMs(span.startTimeUnixNano);
             const endMs = nanoToMs(span.endTimeUnixNano);
             const durationMs = endMs - startMs;

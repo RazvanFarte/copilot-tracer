@@ -7,7 +7,8 @@
  *  3. Inject OTEL env vars into:
  *     - Shell profile: ~/.zshrc / ~/.bashrc / ~/.zprofile (macOS/Linux),
  *       $PROFILE — Documents\PowerShell\Microsoft.PowerShell_profile.ps1 (Windows)
- *     - VS Code settings.json (terminal.integrated.env.osx / .linux / .windows)
+ *     - VS Code settings.json (terminal.integrated.env.osx / .linux / .windows,
+ *       plus github.copilot.chat.otel.* for Copilot Chat)
  *  4. Print a summary and next steps
  */
 import { execSync } from 'child_process';
@@ -397,7 +398,14 @@ function patchShellProfile(profilePath, port) {
     fs.writeFileSync(profilePath, newContent, 'utf8');
     return { action: 'added' };
 }
-function patchVSCodeSettings(settingsPath, port) {
+function vscodeChatOtelSettings(port) {
+    return {
+        'github.copilot.chat.otel.enabled': true,
+        'github.copilot.chat.otel.otlpEndpoint': `http://localhost:${port}`,
+        'github.copilot.chat.otel.captureContent': true,
+    };
+}
+export function patchVSCodeSettings(settingsPath, port) {
     if (!fs.existsSync(settingsPath)) {
         // VS Code creates its User dir on first launch but settings.json only once a
         // setting is changed — a fresh install would otherwise never get configured.
@@ -418,11 +426,17 @@ function patchVSCodeSettings(settingsPath, port) {
     const newEnv = vscodeEnvBlock(port);
     // Already set correctly only if every current key/value is present — checking a
     // hardcoded subset let newer keys (e.g. Claude Code support) silently go unset.
-    if (Object.entries(newEnv).every(([k, v]) => existing[k] === v)) {
+    // The env block only reaches integrated terminals; Copilot Chat itself exports
+    // OTel only when its own settings are on (they are application-scoped, so they
+    // must live in user settings).
+    const chatOtel = vscodeChatOtelSettings(port);
+    if (Object.entries(newEnv).every(([k, v]) => existing[k] === v)
+        && Object.entries(chatOtel).every(([k, v]) => settings[k] === v)) {
         return { action: 'already_set' };
     }
     const wasSet = !!existing[OTEL_ENDPOINT_KEY];
     settings[envKey] = { ...existing, ...newEnv };
+    Object.assign(settings, chatOtel);
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
     return { action: wasSet ? 'updated' : 'added' };
 }
@@ -491,11 +505,12 @@ export function runSetup(port, silent = false) {
         if (result.action === 'added') {
             console.log(`\n${CHECK} VS Code settings patched`);
             console.log(`   ${ARROW} Added ${getVSCodeEnvKey()} with OTEL vars`);
+            console.log(`   ${ARROW} Enabled github.copilot.chat.otel.* (Copilot Chat → tracer)`);
             console.log(`   ${ARROW} Restart VS Code to apply`);
         }
         else if (result.action === 'updated') {
             console.log(`\n${CHECK} VS Code settings updated`);
-            console.log(`   ${ARROW} Updated port to ${port}`);
+            console.log(`   ${ARROW} Updated OTEL vars and github.copilot.chat.otel.* (port ${port})`);
             console.log(`   ${ARROW} Restart VS Code to apply`);
         }
         else if (result.action === 'already_set') {

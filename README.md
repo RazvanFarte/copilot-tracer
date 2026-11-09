@@ -241,9 +241,15 @@ your session continues normally.
 If hooks are unavailable (older Claude Code, `disableAllHooks`, remote sessions), the
 tracer falls back to its original OTLP-only handling.
 
-For VS Code, add to `~/Library/Application Support/Code/User/settings.json`:
+For VS Code, add to your **user** `settings.json` (macOS: `~/Library/Application Support/Code/User/settings.json`;
+WSL: the Windows-side `%APPDATA%\Code\User\settings.json` — these settings are application-scoped,
+so remote/workspace settings are ignored). The `github.copilot.chat.otel.*` keys make Copilot Chat
+itself export traces; the `terminal.integrated.env.*` block covers CLIs started in VS Code terminals:
 
 ```json
+"github.copilot.chat.otel.enabled": true,
+"github.copilot.chat.otel.otlpEndpoint": "http://localhost:4747",
+"github.copilot.chat.otel.captureContent": true,
 "terminal.integrated.env.osx": {
   "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4747",
   "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "true",
